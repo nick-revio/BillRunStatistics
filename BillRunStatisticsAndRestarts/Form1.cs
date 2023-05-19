@@ -7,12 +7,12 @@ namespace BillRunStatisticsAndRestarts
 {
     public partial class Form1 : Form
     {
-        
+
 
         public readonly string FolderPath = "C:\\Temp\\BillRunMetrics";
         public readonly string ServiceRestartsDataFile = "ServiceRestarts.csv";
-        public readonly string ReadFileName = "Metrics.csv";
-        public readonly string WriteFileName = "MetricsWithRestarts.csv";
+        public readonly string BillRunStatsFile = "Metrics.csv";
+        public readonly string BillRunStatsWithRestartsFileName = "MetricsWithRestarts.csv";
 
         public string ClientDirectory { get; set; } = "";
         public string ClientsAppServer { get; set; } = "";
@@ -71,40 +71,46 @@ namespace BillRunStatisticsAndRestarts
             InitializeComponent();
             ClientDirectory = "";
             cts = new CancellationTokenSource();
+            AddMessage("Ready to run!");
         }
 
-        private void Button1_Click(object sender, EventArgs e)
+        private async void Button1_Click(object sender, EventArgs e)
         {
             cts = new CancellationTokenSource();
             ClientDirectory = Path.Combine(FolderPath, clientTextBox.Text);
-            var path = Path.Combine(ClientDirectory, ReadFileName);
+            AddMessage($"Client Directory set to {ClientDirectory}");
+
+            var path = Path.Combine(ClientDirectory, BillRunStatsFile);
+            AddMessage($"Reading bill run data from {path}");
 
             SetClientsAppServer();
 
-            var metrics =  ReadOriginalMetrics(path, cts.Token);
+            var metrics = await ReadOriginalMetrics(path, cts.Token);
 
-            var datadogs =  ReadDataDog(cts.Token);
+            var serviceRestarts = await ReadServiceRestartData(cts.Token);
 
-            var updatedMetrics = DetermineBillRunsImpactedByServiceRestarts(metrics, datadogs);
-            WriteFile(updatedMetrics);
+            var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, cts.Token);
+            await WriteFile(updatedMetrics, cts.Token);
+            AddMessage("Complete.");
         }
 
-        private  List<BillRunMetricsResults> ReadOriginalMetrics(string path, CancellationToken ct)
+        private async Task<List<BillRunMetricsResults>> ReadOriginalMetrics(string path, CancellationToken ct)
         {
-            List<BillRunMetricsResults> results = new List<BillRunMetricsResults>();
+            AddMessage("Reading Bill Run Metrics...");
+            var results = new List<BillRunMetricsResults>();
 
             using (var reader = new StreamReader(path))
             {
-                string? line =  reader.ReadLine();
+                string? line = await reader.ReadLineAsync();
 
-                while (line != null)
+                while (line != null && !ct.IsCancellationRequested)
                 {
                     if (ct.IsCancellationRequested) break;
                     string[] fields = line.Split(",");
 
                     if (fields.Length >= 9)
                     {
-                        BillRunMetricsResults result = new BillRunMetricsResults
+                        BillRunMetricsResults result = new()
                         {
                             Statement_Create_Batch_ID = fields[0],
                             Bill_Run_Date = fields[1],
@@ -113,7 +119,7 @@ namespace BillRunStatisticsAndRestarts
                             Bill_Creation_Duration_Minutes = fields[4],
                             Print_Batch_Duration_Minutes = fields[5],
                             MRC_Duration_Minutes = fields[6],
-                            MRC_Start_Date = DateTime.TryParse(fields[7], out var mrcStart) ? mrcStart: null,
+                            MRC_Start_Date = DateTime.TryParse(fields[7], out var mrcStart) ? mrcStart : null,
                             MRC_End_Date = DateTime.TryParse(fields[8], out var mrcEnd) ? mrcEnd : null,
                             MRC_Customer_Count = fields[9],
                             MRC_Count = fields[10],
@@ -132,29 +138,30 @@ namespace BillRunStatisticsAndRestarts
 
                         results.Add(result);
                     }
-                    line = reader.ReadLine();
+                    line = await reader.ReadLineAsync();
                 }
             }
 
             return results;
         }
 
-        private List<DataDogData> ReadDataDog(CancellationToken ct)
+        private async Task<List<ServiceRestartInfo>> ReadServiceRestartData(CancellationToken ct)
         {
-            var dataDogs = new List<DataDogData>();
+            AddMessage("Reading service restart data...");
+            var dataDogs = new List<ServiceRestartInfo>();
             var path = Path.Combine(ClientDirectory, ServiceRestartsDataFile);
 
             using (var reader = new StreamReader(path))
             {
-                string? line = reader.ReadLine();
+                string? line = await reader.ReadLineAsync();
 
-                while (line != null)
+                while (line != null && !ct.IsCancellationRequested)
                 {
                     string[] fields = line.Split(",");
 
                     if (fields.Length >= 3)
                     {
-                        var result = new DataDogData
+                        var result = new ServiceRestartInfo
                         {
                             AppServer = fields[0].ToUpper(),
                             MRCRestartTime = DateTime.TryParse(fields[1], out var mrcRestartTime) ? mrcRestartTime : null,
@@ -163,18 +170,19 @@ namespace BillRunStatisticsAndRestarts
 
                         dataDogs.Add(result);
                     }
-                    line = reader.ReadLine();
+                    line = await reader.ReadLineAsync();
                 }
             }
 
             return dataDogs;
         }
-        public List<BillRunMetricsResults> DetermineBillRunsImpactedByServiceRestarts(List<BillRunMetricsResults> metrics, List<DataDogData> restarts)
+        public async Task<List<BillRunMetricsResults>> DetermineBillRunsImpactedByServiceRestarts(List<BillRunMetricsResults> metrics, List<ServiceRestartInfo> restarts, CancellationToken ct)
         {
+            AddMessage("Determining which bill runs required or were interrupted by service restarts...");
             foreach (var metric in metrics)
             {
                 var applicableRestarts = restarts.Where(r => r.AppServer.Equals(ClientsAppServer));
-                
+
                 if (metric.MRC_Start_Date.HasValue && metric.MRC_End_Date.HasValue)
                 {
                     if (applicableRestarts.Any(r => metric.MRC_Start_Date <= r.MRCRestartTime && r.MRCRestartTime <= metric.MRC_End_Date))
@@ -190,19 +198,24 @@ namespace BillRunStatisticsAndRestarts
                         metric.CreateStatementsRestarted = "TRUE";
                     }
                 }
+
+                if (ct.IsCancellationRequested) break;
             }
 
             return metrics;
         }
-        private void WriteFile(List<BillRunMetricsResults> metrics)
+        private async Task WriteFile(List<BillRunMetricsResults> metrics, CancellationToken ct)
         {
-            var path = Path.Combine(ClientDirectory, WriteFileName);
-            using (StreamWriter writer = new StreamWriter(path))
+            var path = Path.Combine(ClientDirectory, BillRunStatsWithRestartsFileName);
+            AddMessage($"Writing new file to {path}");
+            using (var writer = new StreamWriter(path))
             {
                 foreach (var metric in metrics)
                 {
                     string line = metric.GetCSVLine();
-                    writer.WriteLine(line);
+                    await writer.WriteLineAsync(line);
+
+                    if (ct.IsCancellationRequested) break;
                 }
             }
         }
@@ -215,6 +228,24 @@ namespace BillRunStatisticsAndRestarts
                 throw new Exception("Could not find client");
 
             ClientsAppServer = clientAndAppServer.AppServerName.ToUpper();
+            AddMessage($"{client}'s services run on {ClientsAppServer}");
+        }
+
+        private async void CancelButton_Click(object sender, EventArgs e)
+        {
+            // This usually runs too fast to even click the button, but if it ever gets hung up for whatever reason, this should work. 
+            AddMessage("Cancel clicked.");
+            cts.Cancel();
+        }
+
+        //private List<string> Messages { get; set; } = new List<string>();
+        private void AddMessage(string message)
+        {
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            var messageWithTimestamp = $"{timestamp}: {message}";
+            //Messages.Add(messageWithTimestamp);
+            MessagesListBox.Items.Add(messageWithTimestamp);
+            MessagesListBox.SelectedIndex = MessagesListBox.Items.Count - 1;
         }
     }
 }

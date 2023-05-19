@@ -6,9 +6,9 @@ using System.Threading.Tasks;
 
 namespace BillRunStatisticsAndRestarts
 {
-    public  class DataDogData
+    public  class ServiceRestartInfo
     {
-        public DataDogData() { }
+        public ServiceRestartInfo() { }
 
         public string AppServer { get; set; } = "";
         public DateTime? MRCRestartTime { get; set; } = null;
