@@ -32,7 +32,7 @@ namespace BillRunStatisticsAndRestarts
             new ClientAndAppServer("TOUCHTONE", "app18.core00.rev.io")
         };
 
-        public List<string> Fields = new()
+        public List<string> BillRunStatisticsFields = new()
         {
             "Statement_Create_Batch_ID",
             "Bill_Run_Date",
@@ -58,7 +58,7 @@ namespace BillRunStatisticsAndRestarts
             "Print_Batch_Last_End_Date",
         };
 
-        public List<string> AddFields = new()
+        public List<string> NewFieldsToAddToStats = new()
         {
             "RecurringBillingRestarted",
             "CreateStatementsRestarted"
@@ -145,6 +145,11 @@ namespace BillRunStatisticsAndRestarts
             return results;
         }
 
+        // If we can get data out of datadog, these indexes will almost definitely need to change
+        private readonly int AppServerIndex = 0;
+        private readonly int RecurringBillingRestartTimeIndex = 1;
+        private readonly int CreateStatementsRestartTimeIndex = 2;
+
         private async Task<List<ServiceRestartInfo>> ReadServiceRestartData(CancellationToken ct)
         {
             AddMessage("Reading service restart data...");
@@ -163,9 +168,9 @@ namespace BillRunStatisticsAndRestarts
                     {
                         var result = new ServiceRestartInfo
                         {
-                            AppServer = fields[0].ToUpper(),
-                            MRCRestartTime = DateTime.TryParse(fields[1], out var mrcRestartTime) ? mrcRestartTime : null,
-                            CreateStatementRestartTime = DateTime.TryParse(fields[2], out var createStatementsRestartTime) ? createStatementsRestartTime : null,
+                            AppServer = fields[AppServerIndex].ToUpper(),
+                            MRCRestartTime = DateTime.TryParse(fields[RecurringBillingRestartTimeIndex], out var mrcRestartTime) ? mrcRestartTime : null,
+                            CreateStatementRestartTime = DateTime.TryParse(fields[CreateStatementsRestartTimeIndex], out var createStatementsRestartTime) ? createStatementsRestartTime : null,
                         };
 
                         dataDogs.Add(result);
