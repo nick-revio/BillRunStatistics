@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using System.Diagnostics.Metrics;
 using System.IO;
 using System.Linq;
@@ -9,17 +10,28 @@ namespace BillRunStatisticsAndRestarts
     {
 
 
-        public readonly string FolderPath = "C:\\Temp\\BillRunMetrics";
-        public readonly string ServiceRestartsDataFile = "ServiceRestarts.csv";
-        public readonly string BillRunStatsFile = "Metrics.csv";
-        public readonly string BillRunStatsWithRestartsFileName = "MetricsWithRestarts.csv";
+        public static readonly string FolderPath = "C:\\Temp\\BillRunMetrics";
+        public static readonly string ServiceRestartsDir = Path.Combine(FolderPath, "ServiceRestarts");
+        public static readonly string BillRunStatsFile = "Metrics.csv";
+        public static readonly string BillRunStatsWithRestartsFileName = "MetricsWithRestarts.csv";
 
         public string ClientDirectory { get; set; } = "";
         public string ClientsAppServer { get; set; } = "";
+        public string ClientsAppServerShort
+        {
+            get
+            {
+                var len = 5;
+                if (string.IsNullOrEmpty(ClientsAppServer) || ClientsAppServer.Length <= len)
+                    return ClientsAppServer.ToUpper();
+                else
+                    return ClientsAppServer[..len].ToUpper();
+            }
+        }
 
         public List<ClientAndAppServer> ClientAndAppServers = new()
         {
-            new ClientAndAppServer("HUNTER","app11.core00.rev.io"),
+            new ClientAndAppServer("HUNTER", "app11.core00.rev.io"),
             new ClientAndAppServer("NUWAVE", "app11.core00.rev.io"),
             new ClientAndAppServer("SKYSWITCH", "app11.core00.rev.io"),
             new ClientAndAppServer("CLEARRATE", "app12.core00.rev.io"),
@@ -145,38 +157,78 @@ namespace BillRunStatisticsAndRestarts
             return results;
         }
 
-        // If we can get data out of datadog, these indexes will almost definitely need to change
-        private readonly int AppServerIndex = 0;
-        private readonly int RecurringBillingRestartTimeIndex = 1;
-        private readonly int CreateStatementsRestartTimeIndex = 2;
+        //// If we can get data out of datadog, these indexes will almost definitely need to change
+        //private readonly int AppServerIndex = 0;
+        //private readonly int RecurringBillingRestartTimeIndex = 1;
+        //private readonly int CreateStatementsRestartTimeIndex = 2;
 
         private async Task<List<ServiceRestartInfo>> ReadServiceRestartData(CancellationToken ct)
         {
             AddMessage("Reading service restart data...");
             var dataDogs = new List<ServiceRestartInfo>();
-            var path = Path.Combine(ClientDirectory, ServiceRestartsDataFile);
+            
+            string[] jsonFiles = Directory.GetFiles(ServiceRestartsDir, "*.json");
 
-            using (var reader = new StreamReader(path))
+            foreach (string jsonFile in jsonFiles)
             {
-                string? line = await reader.ReadLineAsync();
+                AddMessage($"Reading {jsonFile}...");
+                string jsonContent = await File.ReadAllTextAsync(jsonFile, ct);
+                var eventList = JsonConvert.DeserializeObject<DataDogEvents>(jsonContent);
 
-                while (line != null && !ct.IsCancellationRequested)
+                if (eventList == null)
+                    continue;
+
+                foreach (var ev in eventList.Events)
                 {
-                    string[] fields = line.Split(",");
+                    // Recurring Billing or Create Statements? 
+                    var host = ev.host;
+                    var restartDate = DateTimeOffset.FromUnixTimeSeconds(ev.date_happened).LocalDateTime;
+                    var restartDate2 = DateTimeOffset.FromUnixTimeSeconds(ev.date_happened).DateTime;
 
-                    if (fields.Length >= 3)
+                    var serviceRestartInfo = new ServiceRestartInfo()
                     {
-                        var result = new ServiceRestartInfo
-                        {
-                            AppServer = fields[AppServerIndex].ToUpper(),
-                            MRCRestartTime = DateTime.TryParse(fields[RecurringBillingRestartTimeIndex], out var mrcRestartTime) ? mrcRestartTime : null,
-                            CreateStatementRestartTime = DateTime.TryParse(fields[CreateStatementsRestartTimeIndex], out var createStatementsRestartTime) ? createStatementsRestartTime : null,
-                        };
+                        AppServer = host,
+                    };
 
-                        dataDogs.Add(result);
+                    if (ev.monitor_groups.Any(x => x.ToUpper().Contains("RECURRINGBILLING"))
+                        || ev.tags.Any(y => y.ToUpper().Contains("OC.SERVICES.H2O.RECURRINGBILLING")))
+                    {
+                        serviceRestartInfo.MRCRestartTime = restartDate;
                     }
-                    line = await reader.ReadLineAsync();
+                    else if (ev.monitor_groups.Any(x => x.ToUpper().Contains("CREATESTATEMENTS"))
+                        || ev.tags.Any(y => y.ToUpper().Contains("OC.SERVICES.H2O.CREATESTATEMENTS")))
+                    {
+                        serviceRestartInfo.CreateStatementRestartTime = restartDate;
+                    }
+
+                    dataDogs.Add(serviceRestartInfo);
                 }
+
+                /* Old from when I thought I'd have a csv 
+                 * 
+                //using (var reader = new StreamReader(path))
+                //{
+                //    string? line = await reader.ReadLineAsync();
+
+                //    while (line != null && !ct.IsCancellationRequested)
+                //    {
+                //        string[] fields = line.Split(",");
+
+                //        if (fields.Length >= 3)
+                //        {
+                //            var result = new ServiceRestartInfo
+                //            {
+                //                AppServer = fields[AppServerIndex].ToUpper(),
+                //                MRCRestartTime = DateTime.TryParse(fields[RecurringBillingRestartTimeIndex], out var mrcRestartTime) ? mrcRestartTime : null,
+                //                CreateStatementRestartTime = DateTime.TryParse(fields[CreateStatementsRestartTimeIndex], out var createStatementsRestartTime) ? createStatementsRestartTime : null,
+                //            };
+
+                //            dataDogs.Add(result);
+                //        }
+                //        line = await reader.ReadLineAsync();
+                //    }
+                //}
+                */
             }
 
             return dataDogs;
@@ -186,7 +238,7 @@ namespace BillRunStatisticsAndRestarts
             AddMessage("Determining which bill runs required or were interrupted by service restarts...");
             foreach (var metric in metrics)
             {
-                var applicableRestarts = restarts.Where(r => r.AppServer.Equals(ClientsAppServer));
+                var applicableRestarts = restarts.Where(r => r.AppServer.Equals(ClientsAppServer) || r.AppServer.Equals(ClientsAppServerShort));
 
                 if (metric.MRC_Start_Date.HasValue && metric.MRC_End_Date.HasValue)
                 {
@@ -215,6 +267,10 @@ namespace BillRunStatisticsAndRestarts
             AddMessage($"Writing new file to {path}");
             using (var writer = new StreamWriter(path))
             {
+                // write header
+                var header = string.Join(",", BillRunStatisticsFields.Union(NewFieldsToAddToStats));
+                await writer.WriteLineAsync(header);
+
                 foreach (var metric in metrics)
                 {
                     string line = metric.GetCSVLine();
@@ -228,12 +284,10 @@ namespace BillRunStatisticsAndRestarts
         private void SetClientsAppServer()
         {
             var client = clientTextBox.Text.ToUpper();
-            var clientAndAppServer = ClientAndAppServers.Where(x => x.ClientName.ToUpper().Equals(client, StringComparison.OrdinalIgnoreCase)).SingleOrDefault();
-            if (clientAndAppServer == null)
-                throw new Exception("Could not find client");
+            var clientAndAppServer = ClientAndAppServers.Where(x => x.ClientName.ToUpper().Equals(client, StringComparison.OrdinalIgnoreCase)).SingleOrDefault() ?? throw new Exception("Could not find client");
 
             ClientsAppServer = clientAndAppServer.AppServerName.ToUpper();
-            AddMessage($"{client}'s services run on {ClientsAppServer}");
+            AddMessage($"{client}'s services run on {ClientsAppServer} ({clientAndAppServer.AppServerNameShort})");
         }
 
         private async void CancelButton_Click(object sender, EventArgs e)
