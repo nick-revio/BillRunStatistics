@@ -1,8 +1,10 @@
 using Newtonsoft.Json;
+using System.Data.SqlClient;
 using System.Diagnostics.Metrics;
 using System.IO;
 using System.Linq;
 using System.Security.Policy;
+using System.Windows.Forms;
 
 namespace BillRunStatisticsAndRestarts
 {
@@ -15,21 +17,13 @@ namespace BillRunStatisticsAndRestarts
         public static readonly string BillRunStatsFile = "Metrics.csv";
         public static readonly string BillRunStatsWithRestartsFileName = "MetricsWithRestarts.csv";
 
-        public string ClientDirectory { get; set; } = "";
-        public string ClientsAppServer { get; set; } = "";
-        public string ClientsAppServerShort
-        {
-            get
-            {
-                var len = 5;
-                if (string.IsNullOrEmpty(ClientsAppServer) || ClientsAppServer.Length <= len)
-                    return ClientsAppServer.ToUpper();
-                else
-                    return ClientsAppServer[..len].ToUpper();
-            }
-        }
+        public string CurrentClient { get; set; }
+        public string ClientDirectory => Path.Combine(FolderPath, CurrentClient);
+        public string? CurrrentClientsAppServer => ClientsAndAppServers.Where(x => x.ClientName.ToUpper().Equals(CurrentClient, StringComparison.OrdinalIgnoreCase)).Select(x => x.AppServerName.ToUpper()).SingleOrDefault();
+        public string ClientsAppServerShort => StringFunctions.Left(CurrrentClientsAppServer, 5).ToUpper();
+        public string StartDate => StartDateTimePicker.Value.ToString("yyyy-MM-dd");
 
-        public List<ClientAndAppServer> ClientAndAppServers = new()
+        public List<ClientAndAppServer> ClientsAndAppServers = new()
         {
             new ClientAndAppServer("HUNTER", "app11.core00.rev.io"),
             new ClientAndAppServer("NUWAVE", "app11.core00.rev.io"),
@@ -81,28 +75,41 @@ namespace BillRunStatisticsAndRestarts
         public Form1()
         {
             InitializeComponent();
-            ClientDirectory = "";
             cts = new CancellationTokenSource();
+            checkedListBox1.Items.AddRange(ClientsAndAppServers.Select(x => x.ClientName).OrderBy(name => name).ToArray());
             AddMessage("Ready to run!");
         }
 
         private async void Button1_Click(object sender, EventArgs e)
         {
             cts = new CancellationTokenSource();
-            ClientDirectory = Path.Combine(FolderPath, clientTextBox.Text);
-            AddMessage($"Client Directory set to {ClientDirectory}");
 
-            var path = Path.Combine(ClientDirectory, BillRunStatsFile);
-            AddMessage($"Reading bill run data from {path}");
+            foreach (var checkedItem in checkedListBox1.CheckedItems)
+            {
+                CurrentClient = (string)checkedItem;
 
-            SetClientsAppServer();
+                if (string.IsNullOrEmpty(CurrrentClientsAppServer))
+                {
+                    AddMessage("Could not find client!");
+                    return;
+                }
 
-            var metrics = await ReadOriginalMetrics(path, cts.Token);
+                if (!Directory.Exists(ClientDirectory))
+                {
+                    Directory.CreateDirectory(ClientDirectory);
+                    AddMessage($"Directory created: {ClientDirectory}");
+                }
+                AddMessage($"Client Directory set to {ClientDirectory}");
 
-            var serviceRestarts = await ReadServiceRestartData(cts.Token);
+                var path = Path.Combine(ClientDirectory, BillRunStatsFile);
+                AddMessage($"Reading bill run data from {path}");
+                var metrics = await ReadOriginalMetrics(path, cts.Token);
 
-            var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, cts.Token);
-            await WriteFile(updatedMetrics, cts.Token);
+                var serviceRestarts = await ReadServiceRestartData(cts.Token);
+
+                var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, cts.Token);
+                await WriteFile(updatedMetrics, cts.Token);
+            }
             AddMessage("Complete.");
         }
 
@@ -111,17 +118,19 @@ namespace BillRunStatisticsAndRestarts
             AddMessage("Reading Bill Run Metrics...");
             var results = new List<BillRunMetricsResults>();
 
-            using (var reader = new StreamReader(path))
+            if (File.Exists(path))
             {
-                string? line = await reader.ReadLineAsync();
-
-                while (line != null && !ct.IsCancellationRequested)
+                try
                 {
-                    if (ct.IsCancellationRequested) break;
-                    string[] fields = line.Split(",");
+                    using var reader = new StreamReader(path);
 
-                    if (fields.Length >= 9)
+                    string? line = await reader.ReadLineAsync();
+
+                    while (line != null && !ct.IsCancellationRequested)
                     {
+                        if (ct.IsCancellationRequested) break;
+                        string[] fields = line.Split(",");
+
                         BillRunMetricsResults result = new()
                         {
                             Statement_Create_Batch_ID = fields[0],
@@ -149,8 +158,70 @@ namespace BillRunStatisticsAndRestarts
                         };
 
                         results.Add(result);
+                        line = await reader.ReadLineAsync();
                     }
-                    line = await reader.ReadLineAsync();
+                }
+                catch (Exception ex)
+                {
+                    AddMessage(ex.Message);
+                    return results;
+                }
+            }
+            else
+            {
+                // We're gonna read from the DB! 
+                try
+                {
+                    var connString = GetClientConnectionString(CurrentClient);
+                    if (string.IsNullOrEmpty(connString)) return results;
+
+                    using var sqlConnection = new SqlConnection(connString);
+                    sqlConnection.Open();
+
+                    using var sp = new SqlCommand("og.bill_run_metrics", sqlConnection);
+                    sp.CommandType = System.Data.CommandType.StoredProcedure;
+                    sp.Parameters.AddWithValue("@start_date", StartDate);
+                    sp.Parameters.AddWithValue("@end_date", null);
+                    sp.Parameters.AddWithValue("@include_mrcs", 1);
+
+                    using var sqlReader = await sp.ExecuteReaderAsync(ct);
+                    using var writer = new StreamWriter(path);
+
+                    while (sqlReader.Read())
+                    {
+                        var billRunMetric = new BillRunMetricsResults();
+
+                        billRunMetric.Statement_Create_Batch_ID = Convert.ToString(sqlReader[0]);
+                        billRunMetric.Bill_Run_Date = Convert.ToString(sqlReader[1]);
+                        billRunMetric.Bill_Run_Completed_Date = Convert.ToString(sqlReader[2]);
+                        billRunMetric.Bill_Run_Total_Duration_Minutes = Convert.ToString(sqlReader[3]);
+                        billRunMetric.Bill_Creation_Duration_Minutes = Convert.ToString(sqlReader[4]);
+                        billRunMetric.Print_Batch_Duration_Minutes = Convert.ToString(sqlReader[5]);
+                        billRunMetric.MRC_Duration_Minutes = Convert.ToString(sqlReader[6]);
+                        billRunMetric.MRC_Start_Date = DateTime.TryParse(Convert.ToString(sqlReader[7]), out var mrcStart) ? mrcStart : null;
+                        billRunMetric.MRC_End_Date = DateTime.TryParse(Convert.ToString(sqlReader[8]), out var mrcEnd) ? mrcEnd : null;
+                        billRunMetric.MRC_Customer_Count = Convert.ToString(sqlReader[9]);
+                        billRunMetric.MRC_Count = Convert.ToString(sqlReader[10]);
+                        billRunMetric.MRCs_Per_Minute = Convert.ToString(sqlReader[11]);
+                        billRunMetric.MRC_To_Bill_Delay_Minutes = Convert.ToString(sqlReader[12]);
+                        billRunMetric.Bill_Creation_Start_Date = DateTime.TryParse(Convert.ToString(sqlReader[13]), out var billCreateStart) ? billCreateStart : null;
+                        billRunMetric.Bill_Creation_End_Date = DateTime.TryParse(Convert.ToString(sqlReader[14]), out var billCreateEnd) ? billCreateEnd : null;
+                        billRunMetric.Bill_Creation_Count = Convert.ToString(sqlReader[15]);
+                        billRunMetric.Bill_Creation_Non_Child_Customer_Count = Convert.ToString(sqlReader[16]);
+                        billRunMetric.Bill_Creation_Child_Customer_Count = Convert.ToString(sqlReader[17]);
+                        billRunMetric.Bill_Creation_Per_Minute = Convert.ToString(sqlReader[18]);
+                        billRunMetric.Print_Batch_Count = Convert.ToString(sqlReader[19]);
+                        billRunMetric.Print_Batch_First_Start_Date = Convert.ToString(sqlReader[20]);
+                        billRunMetric.Print_Batch_Last_End_Date = Convert.ToString(sqlReader[21]);
+
+                        await writer.WriteLineAsync(billRunMetric.GetCSVLine());
+                        results.Add(billRunMetric);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AddMessage(ex.Message);
+                    return results;
                 }
             }
 
@@ -166,7 +237,6 @@ namespace BillRunStatisticsAndRestarts
         {
             AddMessage("Reading service restart data...");
             var dataDogs = new List<ServiceRestartInfo>();
-            
             string[] jsonFiles = Directory.GetFiles(ServiceRestartsDir, "*.json");
 
             foreach (string jsonFile in jsonFiles)
@@ -203,48 +273,24 @@ namespace BillRunStatisticsAndRestarts
 
                     dataDogs.Add(serviceRestartInfo);
                 }
-
-                /* Old from when I thought I'd have a csv 
-                 * 
-                //using (var reader = new StreamReader(path))
-                //{
-                //    string? line = await reader.ReadLineAsync();
-
-                //    while (line != null && !ct.IsCancellationRequested)
-                //    {
-                //        string[] fields = line.Split(",");
-
-                //        if (fields.Length >= 3)
-                //        {
-                //            var result = new ServiceRestartInfo
-                //            {
-                //                AppServer = fields[AppServerIndex].ToUpper(),
-                //                MRCRestartTime = DateTime.TryParse(fields[RecurringBillingRestartTimeIndex], out var mrcRestartTime) ? mrcRestartTime : null,
-                //                CreateStatementRestartTime = DateTime.TryParse(fields[CreateStatementsRestartTimeIndex], out var createStatementsRestartTime) ? createStatementsRestartTime : null,
-                //            };
-
-                //            dataDogs.Add(result);
-                //        }
-                //        line = await reader.ReadLineAsync();
-                //    }
-                //}
-                */
             }
-
             return dataDogs;
         }
         public async Task<List<BillRunMetricsResults>> DetermineBillRunsImpactedByServiceRestarts(List<BillRunMetricsResults> metrics, List<ServiceRestartInfo> restarts, CancellationToken ct)
         {
             AddMessage("Determining which bill runs required or were interrupted by service restarts...");
+
+            int mrcRestarts = 0, csRestarts = 0;
             foreach (var metric in metrics)
             {
-                var applicableRestarts = restarts.Where(r => r.AppServer.Equals(ClientsAppServer) || r.AppServer.Equals(ClientsAppServerShort));
+                var applicableRestarts = restarts.Where(r => r.AppServer.Equals(CurrrentClientsAppServer) || r.AppServer.Equals(ClientsAppServerShort));
 
                 if (metric.MRC_Start_Date.HasValue && metric.MRC_End_Date.HasValue)
                 {
                     if (applicableRestarts.Any(r => metric.MRC_Start_Date <= r.MRCRestartTime && r.MRCRestartTime <= metric.MRC_End_Date))
                     {
                         metric.RecurringBillingRestarted = "TRUE";
+                        mrcRestarts++;
                     }
                 }
 
@@ -253,12 +299,15 @@ namespace BillRunStatisticsAndRestarts
                     if (applicableRestarts.Any(r => metric.Bill_Creation_Start_Date <= r.CreateStatementRestartTime && r.CreateStatementRestartTime <= metric.Bill_Creation_End_Date))
                     {
                         metric.CreateStatementsRestarted = "TRUE";
+                        csRestarts++;
                     }
                 }
 
                 if (ct.IsCancellationRequested) break;
             }
 
+            AddMessage($"Bill runs impacted by CreateStatements restarts: {csRestarts}.");
+            AddMessage($"Bill runs impacted by RecurringBilling restarts: {mrcRestarts}.");
             return metrics;
         }
         private async Task WriteFile(List<BillRunMetricsResults> metrics, CancellationToken ct)
@@ -281,14 +330,7 @@ namespace BillRunStatisticsAndRestarts
             }
         }
 
-        private void SetClientsAppServer()
-        {
-            var client = clientTextBox.Text.ToUpper();
-            var clientAndAppServer = ClientAndAppServers.Where(x => x.ClientName.ToUpper().Equals(client, StringComparison.OrdinalIgnoreCase)).SingleOrDefault() ?? throw new Exception("Could not find client");
 
-            ClientsAppServer = clientAndAppServer.AppServerName.ToUpper();
-            AddMessage($"{client}'s services run on {ClientsAppServer} ({clientAndAppServer.AppServerNameShort})");
-        }
 
         private async void CancelButton_Click(object sender, EventArgs e)
         {
@@ -305,6 +347,85 @@ namespace BillRunStatisticsAndRestarts
             //Messages.Add(messageWithTimestamp);
             MessagesListBox.Items.Add(messageWithTimestamp);
             MessagesListBox.SelectedIndex = MessagesListBox.Items.Count - 1;
+        }
+
+
+        private const string Global01CS = "Initial Catalog=OVERGROUP;Persist Security Info=False;Integrated Security=SSPI;Data Source=global01.acs.overgroup.com";
+        public void TestConnectToDatabase(string connectionString, string dbNameForMessage = "the database")
+        {
+            using SqlConnection connection = new(connectionString);
+            try
+            {
+                connection.Open();
+
+                // Connection is established successfully
+                var message = $"Connected to {dbNameForMessage}!";
+                Console.WriteLine(message);
+                AddMessage(message);
+                // Perform database operations as needed
+
+                connection.Close();
+            }
+            catch (Exception ex)
+            {
+                // Handle any potential errors
+                var errormess = $"Error connecting to {dbNameForMessage}: " + ex.Message;
+                Console.WriteLine(errormess);
+                AddMessage(errormess);
+            }
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            TestConnectToDatabase(Global01CS, "Global01");
+        }
+
+        private void button3_Click(object sender, EventArgs e)
+        {
+            using SqlConnection connection = new(Global01CS);
+            try
+            {
+                connection.Open();
+
+                // Connection is established successfully
+                var message = "Connected to Global01!";
+                Console.WriteLine(message);
+                AddMessage(message);
+                // Perform database operations as needed
+                foreach (var item in checkedListBox1.CheckedItems)
+                {
+                    var clientCode = (string)item;
+
+                    var command = new SqlCommand($"SELECT H2O_Conn_String from tblClient where Code = '{clientCode}'", connection);
+                    var h2oConn = command.ExecuteScalar()?.ToString();
+
+                    TestConnectToDatabase(h2oConn, clientCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Handle any potential errors
+                var errormess = "Error connecting to the database: " + ex.Message;
+                Console.WriteLine(errormess);
+                AddMessage(errormess);
+            }
+        }
+
+        private string GetClientConnectionString(string clientCode)
+        {
+            var returnConnString = "";
+            using SqlConnection connection = new(Global01CS);
+            try
+            {
+                connection.Open();
+                var command = new SqlCommand($"SELECT H2O_Conn_String from tblClient where Code = '{clientCode}'", connection);
+                returnConnString = command.ExecuteScalar()?.ToString();
+            }
+            catch (Exception ex)
+            {
+                AddMessage("Error connecting to the database: " + ex.Message);
+            }
+            return returnConnString;
         }
     }
 }
