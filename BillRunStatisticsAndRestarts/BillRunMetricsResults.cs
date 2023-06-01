@@ -12,13 +12,13 @@ namespace BillRunStatisticsAndRestarts
     {
         public BillRunMetricsResults() { }
 
-        public string Statement_Create_Batch_ID { get; set; }
+        public int Statement_Create_Batch_ID { get; set; }
         public string Bill_Run_Date { get; set; }
         public string Bill_Run_Completed_Date { get; set; }
-        public string Bill_Run_Total_Duration_Minutes { get; set; }
-        public string Bill_Creation_Duration_Minutes { get; set; }
-        public string Print_Batch_Duration_Minutes { get; set; }
-        public string MRC_Duration_Minutes { get; set; }
+        public double Bill_Run_Total_Duration_Minutes { get; set; }
+        public double Bill_Creation_Duration_Minutes { get; set; }
+        public double Print_Batch_Duration_Minutes { get; set; }
+        public double MRC_Duration_Minutes { get; set; }
         public DateTime? MRC_Start_Date { get; set; }
         public DateTime? MRC_End_Date { get; set; }
         public string MRC_Customer_Count { get; set; }
@@ -34,8 +34,8 @@ namespace BillRunStatisticsAndRestarts
         public string Print_Batch_Count { get; set; }
         public string Print_Batch_First_Start_Date { get; set; }
         public string Print_Batch_Last_End_Date { get; set; }
-        public string RecurringBillingRestarted { get; set; }
-        public string CreateStatementsRestarted { get; set; }
+        public int RecurringBillingRestartCount { get; set; }
+        public int CreateStatementsRestartCount { get; set; }
 
         public string GetCSVLine()
         {
@@ -46,12 +46,52 @@ namespace BillRunStatisticsAndRestarts
 
             foreach (PropertyInfo property in properties)
             {
-                string propertyName = property.Name;
+                var propertyName = property.Name;
                 object propertyValue = property.GetValue(this);
+
+                if (BlankIfZeroFields.Contains(propertyName) && int.TryParse(Convert.ToString(propertyValue), out int x) && x == 0)
+                    propertyValue = "";
+
+                if (DateOnlyFields.Contains(propertyName) && DateTime.TryParse(Convert.ToString(propertyValue), out var dt))
+                    propertyValue = dt.ToString("yyyy-MM-dd");
+
                 sb.Append(propertyValue);
                 sb.Append(",");
             }
             return sb.ToString();
+        }
+
+        protected HashSet<string> BlankIfZeroFields = new HashSet<string>()
+        { 
+            nameof(RecurringBillingRestartCount), 
+            nameof(CreateStatementsRestartCount)
+        };
+        protected HashSet<string> DateOnlyFields = new HashSet<string>()
+        {
+            nameof(Bill_Run_Date)
+        };
+
+        public static List<string> GetCSVHeader()
+        {
+            Type type = typeof(BillRunMetricsResults);
+            PropertyInfo[] properties = type.GetProperties();
+
+            var headers = new List<string>();
+
+            foreach (PropertyInfo property in properties)
+            {
+                var propertyName = property.Name;
+                if (propertyName == nameof(Bill_Creation_Duration_Minutes))
+                {
+                    propertyName += " (CreateStatements)";
+                }
+                if (propertyName == nameof(MRC_Duration_Minutes))
+                {
+                    propertyName += " (RecurringBilling)";
+                }
+                headers.Add(propertyName);
+            }
+            return headers;
         }
 
     }
