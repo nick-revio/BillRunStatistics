@@ -21,19 +21,19 @@ namespace BillRunStatisticsAndRestarts
         public double MRC_Duration_Minutes { get; set; }
         public DateTime? MRC_Start_Date { get; set; }
         public DateTime? MRC_End_Date { get; set; }
-        public string MRC_Customer_Count { get; set; }
-        public string MRC_Count { get; set; }
-        public string MRCs_Per_Minute { get; set; }
-        public string MRC_To_Bill_Delay_Minutes { get; set; }
+        public int MRC_Customer_Count { get; set; }
+        public int MRC_Count { get; set; }
+        public double MRCs_Per_Minute { get; set; }
+        public double MRC_To_Bill_Delay_Minutes { get; set; }
         public DateTime? Bill_Creation_Start_Date { get; set; }
         public DateTime? Bill_Creation_End_Date { get; set; }
-        public string Bill_Creation_Count { get; set; }
-        public string Bill_Creation_Non_Child_Customer_Count { get; set; }
-        public string Bill_Creation_Child_Customer_Count { get; set; }
-        public string Bill_Creation_Per_Minute { get; set; }
-        public string Print_Batch_Count { get; set; }
-        public string Print_Batch_First_Start_Date { get; set; }
-        public string Print_Batch_Last_End_Date { get; set; }
+        public int Bill_Creation_Count { get; set; }
+        public int Bill_Creation_Non_Child_Customer_Count { get; set; }
+        public int Bill_Creation_Child_Customer_Count { get; set; }
+        public double Bill_Creation_Per_Minute { get; set; }
+        public int Print_Batch_Count { get; set; }
+        public DateTime? Print_Batch_First_Start_Date { get; set; }
+        public DateTime? Print_Batch_Last_End_Date { get; set; }
         public int RecurringBillingRestartCount { get; set; }
         public int CreateStatementsRestartCount { get; set; }
 

@@ -19,5 +19,11 @@ namespace BillRunStatisticsAndRestarts
             var s = Convert.ToString(input);
             return double.TryParse(s, out var x) ? x : 0;
         }
+
+        public static DateTime? GetDateTime(object input) 
+        {
+            var s = Convert.ToString(input);
+            return DateTime.TryParse(s, out var x) ? x : null;
+        }
     }
 }

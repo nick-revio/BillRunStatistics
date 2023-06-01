@@ -1,22 +1,17 @@
 using Newtonsoft.Json;
 using OfficeOpenXml;
 using System.Data.SqlClient;
-using System.Diagnostics.Metrics;
-using System.IO;
-using System.Linq;
-using System.Security.Policy;
-using System.Windows.Forms;
 
 namespace BillRunStatisticsAndRestarts
 {
     public partial class Form1 : Form
     {
         public static readonly string FolderPath = "C:\\Temp\\BillRunMetrics";
-        public static readonly string ServiceRestartsDir = Path.Combine(FolderPath, "ServiceRestarts");
+        public string ServiceRestartsDir => Path.Combine(FolderPath, "ServiceRestarts");
         public static readonly string BillRunStatsFile = "Metrics.csv";
         public string BillRunStatsWithRestartsFileName => CurrentClient + "MetricsWithRestarts.csv";
 
-        public string CurrentClient { get; set; }
+        public string CurrentClient { get; set; } = "";
         public string ClientDirectory => Path.Combine(FolderPath, CurrentClient);
         public string? CurrrentClientsAppServer => ClientsAndAppServers.Where(x => x.ClientName.ToUpper().Equals(CurrentClient, StringComparison.OrdinalIgnoreCase)).Select(x => x.AppServerName.ToUpper()).SingleOrDefault();
         public string ClientsAppServerShort => StringFunctions.Left(CurrrentClientsAppServer, 5).ToUpper();
@@ -37,40 +32,9 @@ namespace BillRunStatisticsAndRestarts
             new ClientAndAppServer("TOUCHTONE", "app18.core00.rev.io")
         };
 
-        //public List<string> BillRunStatisticsFields = new()
-        //{
-        //    "Statement_Create_Batch_ID",
-        //    "Bill_Run_Date",
-        //    "Bill_Run_Completed_Date",
-        //    "Bill_Run_Total_Duration_Minutes",
-        //    "Bill_Creation_Duration_Minutes",
-        //    "Print_Batch_Duration_Minutes",
-        //    "MRC_Duration_Minutes",
-        //    "MRC_Start_Date",
-        //    "MRC_End_Date",
-        //    "MRC_Customer_Count",
-        //    "MRC_Count",
-        //    "MRCs_Per_Minute",
-        //    "MRC_To_Bill_Delay_Minutes",
-        //    "Bill_Creation_Start_Date",
-        //    "Bill_Creation_End_Date",
-        //    "Bill_Creation_Count",
-        //    "Bill_Creation_Non_Child_Customer_Count",
-        //    "Bill_Creation_Child_Customer_Count",
-        //    "Bill_Creation_Per_Minute",
-        //    "Print_Batch_Count",
-        //    "Print_Batch_First_Start_Date",
-        //    "Print_Batch_Last_End_Date",
-        //};
-
-        //public List<string> NewFieldsToAddToStats = new()
-        //{
-        //    "RecurringBillingRestarted",
-        //    "CreateStatementsRestarted"
-        //};
-
         public CancellationTokenSource cts { get; set; }
         public List<string> Messages { get; set; } = new List<string>();
+        public Dictionary<string, List<BillRunMetricsResults>> ClientBillRunMetrics { get; set; } = new Dictionary<string, List<BillRunMetricsResults>>();
 
         public Form1()
         {
@@ -125,6 +89,10 @@ namespace BillRunStatisticsAndRestarts
                 var serviceRestarts = await ReadServiceRestartData(cts.Token);
 
                 var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, cts.Token);
+                
+                ClientBillRunMetrics.Remove(CurrentClient);
+                ClientBillRunMetrics.Add(CurrentClient, updatedMetrics);
+
                 var filePath = await WriteClientCSVFile(updatedMetrics, cts.Token);
                 createdFiles.Add(filePath);
             }
@@ -156,7 +124,7 @@ namespace BillRunStatisticsAndRestarts
 
                         BillRunMetricsResults result = new()
                         {
-                            Statement_Create_Batch_ID = ParserFunctions.GetInt( fields[0]),
+                            Statement_Create_Batch_ID = ParserFunctions.GetInt(fields[0]),
                             Bill_Run_Date = fields[1],
                             Bill_Run_Completed_Date = fields[2],
                             Bill_Run_Total_Duration_Minutes = ParserFunctions.GetDouble(fields[3]),
@@ -165,19 +133,19 @@ namespace BillRunStatisticsAndRestarts
                             MRC_Duration_Minutes = ParserFunctions.GetDouble(fields[6]),
                             MRC_Start_Date = DateTime.TryParse(fields[7], out var mrcStart) ? mrcStart : null,
                             MRC_End_Date = DateTime.TryParse(fields[8], out var mrcEnd) ? mrcEnd : null,
-                            MRC_Customer_Count = fields[9],
-                            MRC_Count = fields[10],
-                            MRCs_Per_Minute = fields[11],
-                            MRC_To_Bill_Delay_Minutes = fields[12],
+                            MRC_Customer_Count = ParserFunctions.GetInt(fields[9]),
+                            MRC_Count = ParserFunctions.GetInt(fields[10]),
+                            MRCs_Per_Minute = ParserFunctions.GetDouble(fields[11]),
+                            MRC_To_Bill_Delay_Minutes = ParserFunctions.GetDouble(fields[12]),
                             Bill_Creation_Start_Date = DateTime.TryParse(fields[13], out var billCreateStart) ? billCreateStart : null,
                             Bill_Creation_End_Date = DateTime.TryParse(fields[14], out var billCreateEnd) ? billCreateEnd : null,
-                            Bill_Creation_Count = fields[15],
-                            Bill_Creation_Non_Child_Customer_Count = fields[16],
-                            Bill_Creation_Child_Customer_Count = fields[17],
-                            Bill_Creation_Per_Minute = fields[18],
-                            Print_Batch_Count = fields[19],
-                            Print_Batch_First_Start_Date = fields[20],
-                            Print_Batch_Last_End_Date = fields[21],
+                            Bill_Creation_Count = ParserFunctions.GetInt(fields[15]),
+                            Bill_Creation_Non_Child_Customer_Count = ParserFunctions.GetInt(fields[16]),
+                            Bill_Creation_Child_Customer_Count = ParserFunctions.GetInt(fields[17]),
+                            Bill_Creation_Per_Minute = ParserFunctions.GetDouble(fields[18]),
+                            Print_Batch_Count = ParserFunctions.GetInt(fields[19]),
+                            Print_Batch_First_Start_Date = ParserFunctions.GetDateTime(fields[20]),
+                            Print_Batch_Last_End_Date = ParserFunctions.GetDateTime(fields[21]),
                         };
 
                         results.Add(result);
@@ -218,25 +186,25 @@ namespace BillRunStatisticsAndRestarts
                         billRunMetric.Statement_Create_Batch_ID = ParserFunctions.GetInt(sqlReader[0]);
                         billRunMetric.Bill_Run_Date = Convert.ToString(sqlReader[1]);
                         billRunMetric.Bill_Run_Completed_Date = Convert.ToString(sqlReader[2]);
-                        billRunMetric.Bill_Run_Total_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[3]);
+                        billRunMetric.Bill_Run_Total_Duration_Minutes = ParserFunctions.GetInt(sqlReader[3]);
                         billRunMetric.Bill_Creation_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[4]);
                         billRunMetric.Print_Batch_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[5]);
                         billRunMetric.MRC_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[6]);
                         billRunMetric.MRC_Start_Date = DateTime.TryParse(Convert.ToString(sqlReader[7]), out var mrcStart) ? mrcStart : null;
                         billRunMetric.MRC_End_Date = DateTime.TryParse(Convert.ToString(sqlReader[8]), out var mrcEnd) ? mrcEnd : null;
-                        billRunMetric.MRC_Customer_Count = Convert.ToString(sqlReader[9]);
-                        billRunMetric.MRC_Count = Convert.ToString(sqlReader[10]);
-                        billRunMetric.MRCs_Per_Minute = Convert.ToString(sqlReader[11]);
-                        billRunMetric.MRC_To_Bill_Delay_Minutes = Convert.ToString(sqlReader[12]);
+                        billRunMetric.MRC_Customer_Count = ParserFunctions.GetInt(sqlReader[9]);
+                        billRunMetric.MRC_Count = ParserFunctions.GetInt(sqlReader[10]);
+                        billRunMetric.MRCs_Per_Minute = ParserFunctions.GetDouble(sqlReader[11]);
+                        billRunMetric.MRC_To_Bill_Delay_Minutes = ParserFunctions.GetDouble(sqlReader[12]);
                         billRunMetric.Bill_Creation_Start_Date = DateTime.TryParse(Convert.ToString(sqlReader[13]), out var billCreateStart) ? billCreateStart : null;
                         billRunMetric.Bill_Creation_End_Date = DateTime.TryParse(Convert.ToString(sqlReader[14]), out var billCreateEnd) ? billCreateEnd : null;
-                        billRunMetric.Bill_Creation_Count = Convert.ToString(sqlReader[15]);
-                        billRunMetric.Bill_Creation_Non_Child_Customer_Count = Convert.ToString(sqlReader[16]);
-                        billRunMetric.Bill_Creation_Child_Customer_Count = Convert.ToString(sqlReader[17]);
-                        billRunMetric.Bill_Creation_Per_Minute = Convert.ToString(sqlReader[18]);
-                        billRunMetric.Print_Batch_Count = Convert.ToString(sqlReader[19]);
-                        billRunMetric.Print_Batch_First_Start_Date = Convert.ToString(sqlReader[20]);
-                        billRunMetric.Print_Batch_Last_End_Date = Convert.ToString(sqlReader[21]);
+                        billRunMetric.Bill_Creation_Count = ParserFunctions.GetInt(sqlReader[15]);
+                        billRunMetric.Bill_Creation_Non_Child_Customer_Count = ParserFunctions.GetInt(sqlReader[16]);
+                        billRunMetric.Bill_Creation_Child_Customer_Count = ParserFunctions.GetInt(sqlReader[17]);
+                        billRunMetric.Bill_Creation_Per_Minute = ParserFunctions.GetDouble(sqlReader[18]);
+                        billRunMetric.Print_Batch_Count = ParserFunctions.GetInt(sqlReader[19]);
+                        billRunMetric.Print_Batch_First_Start_Date = ParserFunctions.GetDateTime(sqlReader[20]);
+                        billRunMetric.Print_Batch_Last_End_Date = ParserFunctions.GetDateTime(sqlReader[21]);
 #pragma warning restore CS8601 // Possible null reference assignment.
                         await writer.WriteLineAsync(billRunMetric.GetCSVLine());
                         results.Add(billRunMetric);
@@ -362,24 +330,49 @@ namespace BillRunStatisticsAndRestarts
             AddMessage("Creating combined metrics file...");
             using (ExcelPackage package = new ExcelPackage())
             {
-                foreach (string csvFilePath in csvFilePaths)
+                foreach (var clientMetrics in ClientBillRunMetrics)
                 {
-                    // Read the CSV file
-                    string[] csvLines = File.ReadAllLines(csvFilePath);
+                    ExcelWorksheet worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
 
-                    // Create a new worksheet
-                    ExcelWorksheet worksheet = package.Workbook.Worksheets.Add(Path.GetFileNameWithoutExtension(csvFilePath).Replace("MetricsWithRestarts", ""));
-
-                    // Populate the worksheet with the CSV data
-                    for (int i = 0; i < csvLines.Length; i++)
+                    // Header
+                    var header = BillRunMetricsResults.GetCSVHeader();
+                    for (int i = 0; i < header.Count; i++)
                     {
-                        string[] fields = csvLines[i].Split(',');
-                        for (int j = 0; j < fields.Length; j++)
-                        {
-                            worksheet.Cells[i + 1, j + 1].Value = fields[j];
-                        }
+                        worksheet.Cells[1, i + 1].Value = header[i];
+                    }
+
+                    // Data
+                    for (int j = 0; j < clientMetrics.Value.Count; j++)
+                    {
+                        var item = clientMetrics.Value[j];
+                        worksheet.Cells[j + 2, 1].Value = item.Statement_Create_Batch_ID;
+                        worksheet.Cells[j + 2, 2].Value = item.Bill_Run_Date;
+                        worksheet.Cells[j + 2, 3].Value = item.Bill_Run_Completed_Date;
+                        worksheet.Cells[j + 2, 4].Value = item.Bill_Run_Total_Duration_Minutes;
+                        worksheet.Cells[j + 2, 5].Value = item.Bill_Creation_Duration_Minutes;
+                        worksheet.Cells[j + 2, 6].Value = item.Print_Batch_Duration_Minutes;
+                        worksheet.Cells[j + 2, 7].Value = item.MRC_Duration_Minutes;
+                        worksheet.Cells[j + 2, 8].Value = item.MRC_Start_Date;
+                        worksheet.Cells[j + 2, 9].Value = item.MRC_End_Date;
+                        worksheet.Cells[j + 2, 10].Value = item.MRC_Customer_Count;
+                        worksheet.Cells[j + 2, 11].Value = item.MRC_Count;
+                        worksheet.Cells[j + 2, 12].Value = item.MRCs_Per_Minute;
+                        worksheet.Cells[j + 2, 13].Value = item.MRC_To_Bill_Delay_Minutes;
+                        worksheet.Cells[j + 2, 14].Value = item.Bill_Creation_Start_Date;
+                        worksheet.Cells[j + 2, 15].Value = item.Bill_Creation_End_Date;
+                        worksheet.Cells[j + 2, 16].Value = item.Bill_Creation_Count;
+                        worksheet.Cells[j + 2, 17].Value = item.Bill_Creation_Non_Child_Customer_Count;
+                        worksheet.Cells[j + 2, 18].Value = item.Bill_Creation_Child_Customer_Count;
+                        worksheet.Cells[j + 2, 19].Value = item.Bill_Creation_Per_Minute;
+                        worksheet.Cells[j + 2, 20].Value = item.Print_Batch_Count;
+                        worksheet.Cells[j + 2, 21].Value = item.Print_Batch_First_Start_Date;
+                        worksheet.Cells[j + 2, 22].Value = item.Print_Batch_Last_End_Date;
+                        worksheet.Cells[j + 2, 23].Value = item.RecurringBillingRestartCount > 0 ? item.RecurringBillingRestartCount : "";
+                        worksheet.Cells[j + 2, 24].Value = item.CreateStatementsRestartCount > 0 ? item.CreateStatementsRestartCount : "";
                     }
                 }
+
+
                 var xlsxFileName = "CombinedMetrics.xlsx";
                 var xlsxFilePath = Path.Combine(FolderPath, xlsxFileName);
                 if (File.Exists(xlsxFilePath))
