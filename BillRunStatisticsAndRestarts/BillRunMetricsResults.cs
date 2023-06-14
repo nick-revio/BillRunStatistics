@@ -64,12 +64,17 @@ namespace BillRunStatisticsAndRestarts
             nameof(Bill_Run_Date)
         };
 
-        public static List<string> GetCSVHeader()
+        public static List<string> GetCSVHeader(bool includeClientName = false)
         {
             Type type = typeof(BillRunMetricsResults);
             PropertyInfo[] properties = type.GetProperties();
 
             var headers = new List<string>();
+
+            if (includeClientName)
+            {
+                headers.Add("ClientName");
+            }
 
             foreach (PropertyInfo property in properties)
             {

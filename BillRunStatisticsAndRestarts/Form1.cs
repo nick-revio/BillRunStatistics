@@ -330,50 +330,80 @@ namespace BillRunStatisticsAndRestarts
         {
             AddMessage("Creating combined metrics file...");
 
+            // Create 1 mega sheet or 1 sheet per client?
+            bool doSingleSheet = this.AddAllClientsSheetCheckBox.Checked;
+            int currentRow = 1;
+
             using ExcelPackage package = new();
+            ExcelWorksheet worksheet = null;
+            if (doSingleSheet)
+            {
+                worksheet = package.Workbook.Worksheets.Add("ResultsCombined");
+            }
+            
             foreach (var clientMetrics in ClientBillRunMetrics)
             {
-                ExcelWorksheet worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
+                if (!doSingleSheet)
+                {
+                    worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
+                    currentRow = 1;
+                }
+
+                if (worksheet == null)
+                    throw new NullReferenceException($"worksheet is null somehow! Form1.cs line 351.");
 
                 // Header
-                var header = BillRunMetricsResults.GetCSVHeader();
-                for (int i = 0; i < header.Count; i++)
+                if (currentRow == 1)
                 {
-                    worksheet.Cells[1, i + 1].Value = header[i];
+                    var header = BillRunMetricsResults.GetCSVHeader(includeClientName: doSingleSheet);
+                    for (int i = 0; i < header.Count; i++)
+                    {
+                        worksheet.Cells[currentRow, i + 1].Value = header[i];
+                    }
+                    currentRow++;
                 }
 
                 // Data
                 for (int j = 0; j < clientMetrics.Value.Count; j++)
                 {
                     var item = clientMetrics.Value[j];
-                    worksheet.Cells[j + 2, 1].Value = item.Statement_Create_Batch_ID;
-                    worksheet.Cells[j + 2, 2].Value = item.Bill_Run_Date;
-                    worksheet.Cells[j + 2, 3].Value = item.Bill_Run_Completed_Date;
-                    worksheet.Cells[j + 2, 4].Value = item.Bill_Run_Total_Duration_Minutes;
-                    worksheet.Cells[j + 2, 5].Value = item.Bill_Creation_Duration_Minutes;
-                    worksheet.Cells[j + 2, 6].Value = item.Print_Batch_Duration_Minutes;
-                    worksheet.Cells[j + 2, 7].Value = item.MRC_Duration_Minutes;
-                    worksheet.Cells[j + 2, 8].Value = item.MRC_Start_Date;
-                    worksheet.Cells[j + 2, 9].Value = item.MRC_End_Date;
-                    worksheet.Cells[j + 2, 10].Value = item.MRC_Customer_Count;
-                    worksheet.Cells[j + 2, 11].Value = item.MRC_Count;
-                    worksheet.Cells[j + 2, 12].Value = item.MRCs_Per_Minute;
-                    worksheet.Cells[j + 2, 13].Value = item.MRC_To_Bill_Delay_Minutes;
-                    worksheet.Cells[j + 2, 14].Value = item.Bill_Creation_Start_Date;
-                    worksheet.Cells[j + 2, 15].Value = item.Bill_Creation_End_Date;
-                    worksheet.Cells[j + 2, 16].Value = item.Bill_Creation_Count;
-                    worksheet.Cells[j + 2, 17].Value = item.Bill_Creation_Non_Child_Customer_Count;
-                    worksheet.Cells[j + 2, 18].Value = item.Bill_Creation_Child_Customer_Count;
-                    worksheet.Cells[j + 2, 19].Value = item.Bill_Creation_Per_Minute;
-                    worksheet.Cells[j + 2, 20].Value = item.Print_Batch_Count;
-                    worksheet.Cells[j + 2, 21].Value = item.Print_Batch_First_Start_Date;
-                    worksheet.Cells[j + 2, 22].Value = item.Print_Batch_Last_End_Date;
-                    worksheet.Cells[j + 2, 23].Value = item.RecurringBillingRestartCount > 0 ? item.RecurringBillingRestartCount : "";
-                    worksheet.Cells[j + 2, 24].Value = item.CreateStatementsRestartCount > 0 ? item.CreateStatementsRestartCount : "";
+                    int offset = 0;
+                    if (doSingleSheet)
+                    {
+                        offset = 1;
+                        worksheet.Cells[currentRow, offset].Value = clientMetrics.Key;
+                    }
+
+                    worksheet.Cells[currentRow, offset + 1].Value = item.Statement_Create_Batch_ID;
+                    worksheet.Cells[currentRow, offset + 2].Value = item.Bill_Run_Date;
+                    worksheet.Cells[currentRow, offset + 3].Value = item.Bill_Run_Completed_Date;
+                    worksheet.Cells[currentRow, offset + 4].Value = item.Bill_Run_Total_Duration_Minutes;
+                    worksheet.Cells[currentRow, offset + 5].Value = item.Bill_Creation_Duration_Minutes;
+                    worksheet.Cells[currentRow, offset + 6].Value = item.Print_Batch_Duration_Minutes;
+                    worksheet.Cells[currentRow, offset + 7].Value = item.MRC_Duration_Minutes;
+                    worksheet.Cells[currentRow, offset + 8].Value = item.MRC_Start_Date;
+                    worksheet.Cells[currentRow, offset + 9].Value = item.MRC_End_Date;
+                    worksheet.Cells[currentRow, offset + 10].Value = item.MRC_Customer_Count;
+                    worksheet.Cells[currentRow, offset + 11].Value = item.MRC_Count;
+                    worksheet.Cells[currentRow, offset + 12].Value = item.MRCs_Per_Minute;
+                    worksheet.Cells[currentRow, offset + 13].Value = item.MRC_To_Bill_Delay_Minutes;
+                    worksheet.Cells[currentRow, offset + 14].Value = item.Bill_Creation_Start_Date;
+                    worksheet.Cells[currentRow, offset + 15].Value = item.Bill_Creation_End_Date;
+                    worksheet.Cells[currentRow, offset + 16].Value = item.Bill_Creation_Count;
+                    worksheet.Cells[currentRow, offset + 17].Value = item.Bill_Creation_Non_Child_Customer_Count;
+                    worksheet.Cells[currentRow, offset + 18].Value = item.Bill_Creation_Child_Customer_Count;
+                    worksheet.Cells[currentRow, offset + 19].Value = item.Bill_Creation_Per_Minute;
+                    worksheet.Cells[currentRow, offset + 20].Value = item.Print_Batch_Count;
+                    worksheet.Cells[currentRow, offset + 21].Value = item.Print_Batch_First_Start_Date;
+                    worksheet.Cells[currentRow, offset + 22].Value = item.Print_Batch_Last_End_Date;
+                    worksheet.Cells[currentRow, offset + 23].Value = item.RecurringBillingRestartCount > 0 ? item.RecurringBillingRestartCount : "";
+                    worksheet.Cells[currentRow, offset + 24].Value = item.CreateStatementsRestartCount > 0 ? item.CreateStatementsRestartCount : "";
+
+                    currentRow++;
                 }
             }
 
-            var xlsxFileName = "CombinedMetrics.xlsx";
+            var xlsxFileName = doSingleSheet ? "ResultsCombined.xlsx" : "CombinedMetrics.xlsx";
             var xlsxFilePath = Path.Combine(FolderPath, xlsxFileName);
             if (File.Exists(xlsxFilePath))
             {
