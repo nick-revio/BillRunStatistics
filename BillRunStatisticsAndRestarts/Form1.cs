@@ -13,7 +13,7 @@ namespace BillRunStatisticsAndRestarts
 
         public string CurrentClient { get; set; } = "";
         public string ClientDirectory => Path.Combine(FolderPath, CurrentClient);
-        public string? CurrrentClientsAppServer => ClientsAndAppServers.Where(x => x.ClientName.ToUpper().Equals(CurrentClient, StringComparison.OrdinalIgnoreCase)).Select(x => x.AppServerName.ToUpper()).SingleOrDefault();
+        public string CurrrentClientsAppServer => ClientsAndAppServers.Where(x => x.ClientName.ToUpper().Equals(CurrentClient.ToUpper())).Select(x => x.AppServerName.ToUpper()).Single();
         public string ClientsAppServerShort => StringFunctions.Left(CurrrentClientsAppServer, 5).ToUpper();
         public string StartDate => StartDateTimePicker.Value.ToString("yyyy-MM-dd");
 
@@ -32,14 +32,14 @@ namespace BillRunStatisticsAndRestarts
             new ClientAndAppServer("TOUCHTONE", "app18.core00.rev.io")
         };
 
-        public CancellationTokenSource cts { get; set; }
+        public CancellationTokenSource CTS { get; set; }
         public List<string> Messages { get; set; } = new List<string>();
         public Dictionary<string, List<BillRunMetricsResults>> ClientBillRunMetrics { get; set; } = new Dictionary<string, List<BillRunMetricsResults>>();
 
         public Form1()
         {
             InitializeComponent();
-            cts = new CancellationTokenSource();
+            CTS = new CancellationTokenSource();
 
             checkedListBox1.Items.AddRange(ClientsAndAppServers.Select(x => x.ClientName).OrderBy(name => name).ToArray());
             for (int i = 0; i < checkedListBox1.Items.Count; i++)
@@ -58,7 +58,7 @@ namespace BillRunStatisticsAndRestarts
 
         private async void Button1_Click(object sender, EventArgs e)
         {
-            cts = new CancellationTokenSource();
+            CTS = new CancellationTokenSource();
             var createdFiles = new List<string>();
 
             foreach (var checkedItem in checkedListBox1.CheckedItems)
@@ -80,20 +80,20 @@ namespace BillRunStatisticsAndRestarts
 
                 var path = Path.Combine(ClientDirectory, BillRunStatsFile);
                 AddMessage($"Reading bill run data from {path}");
-                var metrics = await ReadOriginalMetrics(path, cts.Token);
+                var metrics = await ReadOriginalMetrics(path, CTS.Token);
                 if (metrics == null || !metrics.Any())
                 {
                     AddMessage("Could not gather original bill run metrics.");
                     continue;
                 }
-                var serviceRestarts = await ReadServiceRestartData(cts.Token);
+                var serviceRestarts = await ReadServiceRestartData(CTS.Token);
 
-                var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, cts.Token);
-                
+                var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
+
                 ClientBillRunMetrics.Remove(CurrentClient);
                 ClientBillRunMetrics.Add(CurrentClient, updatedMetrics);
 
-                var filePath = await WriteClientCSVFile(updatedMetrics, cts.Token);
+                var filePath = await WriteClientCSVFile(updatedMetrics, CTS.Token);
                 createdFiles.Add(filePath);
             }
 
@@ -186,7 +186,7 @@ namespace BillRunStatisticsAndRestarts
                         billRunMetric.Statement_Create_Batch_ID = ParserFunctions.GetInt(sqlReader[0]);
                         billRunMetric.Bill_Run_Date = Convert.ToString(sqlReader[1]);
                         billRunMetric.Bill_Run_Completed_Date = Convert.ToString(sqlReader[2]);
-                        billRunMetric.Bill_Run_Total_Duration_Minutes = ParserFunctions.GetInt(sqlReader[3]);
+                        billRunMetric.Bill_Run_Total_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[3]);
                         billRunMetric.Bill_Creation_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[4]);
                         billRunMetric.Print_Batch_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[5]);
                         billRunMetric.MRC_Duration_Minutes = ParserFunctions.GetDouble(sqlReader[6]);
@@ -266,35 +266,37 @@ namespace BillRunStatisticsAndRestarts
         public async Task<List<BillRunMetricsResults>> DetermineBillRunsImpactedByServiceRestarts(List<BillRunMetricsResults> metrics, List<ServiceRestartInfo> restarts, CancellationToken ct)
         {
             AddMessage("Determining which bill runs required or were interrupted by service restarts...");
-
             int mrcRestarts = 0, csRestarts = 0;
-            foreach (var metric in metrics)
+
+            await Task.Run(() =>
             {
-                var applicableRestarts = restarts.Where(r => r.AppServer.Equals(CurrrentClientsAppServer) || r.AppServer.Equals(ClientsAppServerShort));
-
-                if (metric.MRC_Start_Date.HasValue && metric.MRC_End_Date.HasValue)
+                foreach (var metric in metrics)
                 {
-                    if (applicableRestarts.Any(r => metric.MRC_Start_Date <= r.MRCRestartTime && r.MRCRestartTime <= metric.MRC_End_Date))
+                    var applicableRestarts = restarts.Where(r => r.AppServer.Equals(CurrrentClientsAppServer) || r.AppServer.Equals(ClientsAppServerShort));
+
+                    if (metric.MRC_Start_Date.HasValue && metric.MRC_End_Date.HasValue)
                     {
-                        metric.RecurringBillingRestartCount++;
-                        mrcRestarts++;
+                        if (applicableRestarts.Any(r => metric.MRC_Start_Date <= r.MRCRestartTime && r.MRCRestartTime <= metric.MRC_End_Date))
+                        {
+                            metric.RecurringBillingRestartCount++;
+                            mrcRestarts++;
+                        }
+                    }
+
+                    if (metric.Bill_Creation_Start_Date.HasValue && metric.Bill_Creation_End_Date.HasValue)
+                    {
+                        if (applicableRestarts.Any(r => metric.Bill_Creation_Start_Date <= r.CreateStatementRestartTime && r.CreateStatementRestartTime <= metric.Bill_Creation_End_Date))
+                        {
+                            metric.CreateStatementsRestartCount++;
+                            csRestarts++;
+                        }
                     }
                 }
 
-                if (metric.Bill_Creation_Start_Date.HasValue && metric.Bill_Creation_End_Date.HasValue)
-                {
-                    if (applicableRestarts.Any(r => metric.Bill_Creation_Start_Date <= r.CreateStatementRestartTime && r.CreateStatementRestartTime <= metric.Bill_Creation_End_Date))
-                    {
-                        metric.CreateStatementsRestartCount++;
-                        csRestarts++;
-                    }
-                }
-
-                if (ct.IsCancellationRequested) break;
-            }
-
+            }, ct);
             AddMessage($"Bill runs impacted by CreateStatements restarts: {csRestarts}.");
             AddMessage($"Bill runs impacted by RecurringBilling restarts: {mrcRestarts}.");
+
             return metrics;
         }
         private async Task<string> WriteClientCSVFile(List<BillRunMetricsResults> metrics, CancellationToken ct)
@@ -303,20 +305,19 @@ namespace BillRunStatisticsAndRestarts
             AddMessage($"Writing new file to {path}");
             try
             {
-                using (var writer = new StreamWriter(path))
-                {
-                    // write header
-                    var header = string.Join(",", BillRunMetricsResults.GetCSVHeader());
-                    await writer.WriteLineAsync(header);
+                using var writer = new StreamWriter(path);
 
+                var header = string.Join(",", BillRunMetricsResults.GetCSVHeader());
+                await writer.WriteLineAsync(header);
+
+                await Task.Run(async () =>
+                {
                     foreach (var metric in metrics)
                     {
                         string line = metric.GetCSVLine();
                         await writer.WriteLineAsync(line);
-
-                        if (ct.IsCancellationRequested) break;
                     }
-                }
+                }, ct);
             }
             catch (Exception ex)
             {
@@ -328,74 +329,72 @@ namespace BillRunStatisticsAndRestarts
         private async Task CreateCombinedExcelFile(IEnumerable<string> csvFilePaths)
         {
             AddMessage("Creating combined metrics file...");
-            using (ExcelPackage package = new ExcelPackage())
+
+            using ExcelPackage package = new();
+            foreach (var clientMetrics in ClientBillRunMetrics)
             {
-                foreach (var clientMetrics in ClientBillRunMetrics)
+                ExcelWorksheet worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
+
+                // Header
+                var header = BillRunMetricsResults.GetCSVHeader();
+                for (int i = 0; i < header.Count; i++)
                 {
-                    ExcelWorksheet worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
-
-                    // Header
-                    var header = BillRunMetricsResults.GetCSVHeader();
-                    for (int i = 0; i < header.Count; i++)
-                    {
-                        worksheet.Cells[1, i + 1].Value = header[i];
-                    }
-
-                    // Data
-                    for (int j = 0; j < clientMetrics.Value.Count; j++)
-                    {
-                        var item = clientMetrics.Value[j];
-                        worksheet.Cells[j + 2, 1].Value = item.Statement_Create_Batch_ID;
-                        worksheet.Cells[j + 2, 2].Value = item.Bill_Run_Date;
-                        worksheet.Cells[j + 2, 3].Value = item.Bill_Run_Completed_Date;
-                        worksheet.Cells[j + 2, 4].Value = item.Bill_Run_Total_Duration_Minutes;
-                        worksheet.Cells[j + 2, 5].Value = item.Bill_Creation_Duration_Minutes;
-                        worksheet.Cells[j + 2, 6].Value = item.Print_Batch_Duration_Minutes;
-                        worksheet.Cells[j + 2, 7].Value = item.MRC_Duration_Minutes;
-                        worksheet.Cells[j + 2, 8].Value = item.MRC_Start_Date;
-                        worksheet.Cells[j + 2, 9].Value = item.MRC_End_Date;
-                        worksheet.Cells[j + 2, 10].Value = item.MRC_Customer_Count;
-                        worksheet.Cells[j + 2, 11].Value = item.MRC_Count;
-                        worksheet.Cells[j + 2, 12].Value = item.MRCs_Per_Minute;
-                        worksheet.Cells[j + 2, 13].Value = item.MRC_To_Bill_Delay_Minutes;
-                        worksheet.Cells[j + 2, 14].Value = item.Bill_Creation_Start_Date;
-                        worksheet.Cells[j + 2, 15].Value = item.Bill_Creation_End_Date;
-                        worksheet.Cells[j + 2, 16].Value = item.Bill_Creation_Count;
-                        worksheet.Cells[j + 2, 17].Value = item.Bill_Creation_Non_Child_Customer_Count;
-                        worksheet.Cells[j + 2, 18].Value = item.Bill_Creation_Child_Customer_Count;
-                        worksheet.Cells[j + 2, 19].Value = item.Bill_Creation_Per_Minute;
-                        worksheet.Cells[j + 2, 20].Value = item.Print_Batch_Count;
-                        worksheet.Cells[j + 2, 21].Value = item.Print_Batch_First_Start_Date;
-                        worksheet.Cells[j + 2, 22].Value = item.Print_Batch_Last_End_Date;
-                        worksheet.Cells[j + 2, 23].Value = item.RecurringBillingRestartCount > 0 ? item.RecurringBillingRestartCount : "";
-                        worksheet.Cells[j + 2, 24].Value = item.CreateStatementsRestartCount > 0 ? item.CreateStatementsRestartCount : "";
-                    }
+                    worksheet.Cells[1, i + 1].Value = header[i];
                 }
 
-
-                var xlsxFileName = "CombinedMetrics.xlsx";
-                var xlsxFilePath = Path.Combine(FolderPath, xlsxFileName);
-                if (File.Exists(xlsxFilePath))
+                // Data
+                for (int j = 0; j < clientMetrics.Value.Count; j++)
                 {
-                    try
-                    {
-                        File.Delete(xlsxFilePath);
-                    }
-                    catch (Exception e)
-                    {
-                        AddMessage("Error: Could not delete '{xlsxFileName}': " + e.Message);
-                    }
+                    var item = clientMetrics.Value[j];
+                    worksheet.Cells[j + 2, 1].Value = item.Statement_Create_Batch_ID;
+                    worksheet.Cells[j + 2, 2].Value = item.Bill_Run_Date;
+                    worksheet.Cells[j + 2, 3].Value = item.Bill_Run_Completed_Date;
+                    worksheet.Cells[j + 2, 4].Value = item.Bill_Run_Total_Duration_Minutes;
+                    worksheet.Cells[j + 2, 5].Value = item.Bill_Creation_Duration_Minutes;
+                    worksheet.Cells[j + 2, 6].Value = item.Print_Batch_Duration_Minutes;
+                    worksheet.Cells[j + 2, 7].Value = item.MRC_Duration_Minutes;
+                    worksheet.Cells[j + 2, 8].Value = item.MRC_Start_Date;
+                    worksheet.Cells[j + 2, 9].Value = item.MRC_End_Date;
+                    worksheet.Cells[j + 2, 10].Value = item.MRC_Customer_Count;
+                    worksheet.Cells[j + 2, 11].Value = item.MRC_Count;
+                    worksheet.Cells[j + 2, 12].Value = item.MRCs_Per_Minute;
+                    worksheet.Cells[j + 2, 13].Value = item.MRC_To_Bill_Delay_Minutes;
+                    worksheet.Cells[j + 2, 14].Value = item.Bill_Creation_Start_Date;
+                    worksheet.Cells[j + 2, 15].Value = item.Bill_Creation_End_Date;
+                    worksheet.Cells[j + 2, 16].Value = item.Bill_Creation_Count;
+                    worksheet.Cells[j + 2, 17].Value = item.Bill_Creation_Non_Child_Customer_Count;
+                    worksheet.Cells[j + 2, 18].Value = item.Bill_Creation_Child_Customer_Count;
+                    worksheet.Cells[j + 2, 19].Value = item.Bill_Creation_Per_Minute;
+                    worksheet.Cells[j + 2, 20].Value = item.Print_Batch_Count;
+                    worksheet.Cells[j + 2, 21].Value = item.Print_Batch_First_Start_Date;
+                    worksheet.Cells[j + 2, 22].Value = item.Print_Batch_Last_End_Date;
+                    worksheet.Cells[j + 2, 23].Value = item.RecurringBillingRestartCount > 0 ? item.RecurringBillingRestartCount : "";
+                    worksheet.Cells[j + 2, 24].Value = item.CreateStatementsRestartCount > 0 ? item.CreateStatementsRestartCount : "";
                 }
-                package.SaveAs(new FileInfo(xlsxFilePath));
-                AddMessage("Combined metrics file created at " + xlsxFilePath);
             }
+
+            var xlsxFileName = "CombinedMetrics.xlsx";
+            var xlsxFilePath = Path.Combine(FolderPath, xlsxFileName);
+            if (File.Exists(xlsxFilePath))
+            {
+                try
+                {
+                    File.Delete(xlsxFilePath);
+                }
+                catch (Exception e)
+                {
+                    AddMessage($"Error: Could not delete '{xlsxFileName}': " + e.Message);
+                }
+            }
+            package.SaveAs(new FileInfo(xlsxFilePath));
+            AddMessage("Combined metrics file created at " + xlsxFilePath);
         }
 
-        private async void CancelButton_Click(object sender, EventArgs e)
+        private void CancelButton_Click(object sender, EventArgs e)
         {
             // This usually runs too fast to even click the button, but if it ever gets hung up for whatever reason, this should work. 
             AddMessage("Cancel clicked.");
-            cts.Cancel();
+            CTS.Cancel();
         }
 
         //private List<string> Messages { get; set; } = new List<string>();
@@ -490,7 +489,7 @@ namespace BillRunStatisticsAndRestarts
         private void CheckBoxAll_CheckedChanged(object sender, EventArgs e)
         {
             var checkOrUncheck = CheckBoxAll.Checked;
-            for (int i  = 0; i< checkedListBox1.Items.Count; i++)
+            for (int i = 0; i < checkedListBox1.Items.Count; i++)
             {
                 checkedListBox1.SetItemChecked(i, checkOrUncheck);
             }

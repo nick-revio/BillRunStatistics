@@ -1,18 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace BillRunStatisticsAndRestarts
+﻿namespace BillRunStatisticsAndRestarts
 {
-	public class DataDogEvents
+    public class DataDogEvents
 	{
 		public DataDogEvent[] Events { get; set; }
 
 		public DataDogEvents()
 		{
-			Events = new DataDogEvent[] { };
+			Events = Array.Empty<DataDogEvent>();
 		}
 	}
 
@@ -22,7 +16,7 @@ namespace BillRunStatisticsAndRestarts
 		public string id_str { get; set; }
 		public string title { get; set; }
 		public string text { get; set; }
-		public ddpriority priority { get; set; } // this could be an enum, normal or low
+		public DDPriority priority { get; set; } // this could be an enum, normal or low
 		public long date_happened { get; set; } //unix time
 		public string source { get; set; }
 		public string alert_type { get; set; } // this could also be an enum probably
@@ -43,7 +37,7 @@ namespace BillRunStatisticsAndRestarts
 			id_str = string.Empty;
 			title = string.Empty;
 			text = string.Empty;
-			priority = ddpriority.normal;
+			priority = DDPriority.normal;
 			date_happened = 0;
 			source = string.Empty;
 			alert_type = string.Empty;
@@ -58,7 +52,7 @@ namespace BillRunStatisticsAndRestarts
 			monitor_group_status = 0;
 		}
 
-		public enum ddpriority
+		public enum DDPriority
 		{
 			low = 0,
 			normal = 1

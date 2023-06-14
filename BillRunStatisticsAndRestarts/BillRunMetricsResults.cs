@@ -1,20 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
-using System.Runtime.CompilerServices;
+﻿using System.Reflection;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace BillRunStatisticsAndRestarts
 {
     public class BillRunMetricsResults
     {
-        public BillRunMetricsResults() { }
-
         public int Statement_Create_Batch_ID { get; set; }
-        public string Bill_Run_Date { get; set; }
-        public string Bill_Run_Completed_Date { get; set; }
+        public string Bill_Run_Date { get; set; } = "";
+        public string Bill_Run_Completed_Date { get; set; } = "";
         public double Bill_Run_Total_Duration_Minutes { get; set; }
         public double Bill_Creation_Duration_Minutes { get; set; }
         public double Print_Batch_Duration_Minutes { get; set; }
@@ -42,12 +35,12 @@ namespace BillRunStatisticsAndRestarts
             Type type = typeof(BillRunMetricsResults);
             PropertyInfo[] properties = type.GetProperties();
 
-            StringBuilder sb = new StringBuilder();
+            StringBuilder sb = new();
 
             foreach (PropertyInfo property in properties)
             {
                 var propertyName = property.Name;
-                object propertyValue = property.GetValue(this);
+                object? propertyValue = property.GetValue(this);
 
                 if (BlankIfZeroFields.Contains(propertyName) && int.TryParse(Convert.ToString(propertyValue), out int x) && x == 0)
                     propertyValue = "";
