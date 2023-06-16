@@ -6,7 +6,7 @@ namespace BillRunStatisticsAndRestarts
 {
     public partial class Form1 : Form
     {
-        public static readonly string FolderPath = "C:\\Temp\\BillRunMetrics";
+        public string FolderPath => SaveDirectoryTextBox.Text;
         public string ServiceRestartsDir => Path.Combine(FolderPath, "ServiceRestarts");
         public static readonly string BillRunStatsFile = "Metrics.csv";
         public string BillRunStatsWithRestartsFileName => CurrentClient + "MetricsWithRestarts.csv";
@@ -58,14 +58,70 @@ namespace BillRunStatisticsAndRestarts
 
         private async void Button1_Click(object sender, EventArgs e)
         {
+            var selectedClients = new List<string>();
+            foreach (var checkedItem in checkedListBox1.CheckedItems)
+            {
+                selectedClients.Add((string)checkedItem);
+            }
+
+            await DoOgBillRunMetrics(selectedClients, true, AddAllClientsSheetCheckBox.Checked);
+            
+            //CTS = new CancellationTokenSource();
+            //var createdFiles = new List<string>();
+
+            //foreach (var checkedItem in checkedListBox1.CheckedItems)
+            //{
+            //    CurrentClient = (string)checkedItem;
+
+            //    if (string.IsNullOrEmpty(CurrrentClientsAppServer))
+            //    {
+            //        AddMessage("Could not find client!");
+            //        return;
+            //    }
+
+            //    if (!Directory.Exists(ClientDirectory))
+            //    {
+            //        Directory.CreateDirectory(ClientDirectory);
+            //        AddMessage($"Directory created: {ClientDirectory}");
+            //    }
+            //    AddMessage($"Client Directory set to {ClientDirectory}");
+
+            //    var path = Path.Combine(ClientDirectory, BillRunStatsFile);
+            //    AddMessage($"Reading bill run data from {path}");
+            //    var metrics = await ReadOriginalMetrics(path, CTS.Token);
+            //    if (metrics == null || !metrics.Any())
+            //    {
+            //        AddMessage("Could not gather original bill run metrics.");
+            //        continue;
+            //    }
+            //    var serviceRestarts = await ReadServiceRestartData(CTS.Token);
+
+            //    var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
+
+            //    ClientBillRunMetrics.Remove(CurrentClient);
+            //    ClientBillRunMetrics.Add(CurrentClient, updatedMetrics);
+
+            //    var filePath = await WriteClientCSVFile(updatedMetrics, CTS.Token);
+            //    createdFiles.Add(filePath);
+            //}
+
+            //if (CreateCombinedFileCheckBox.Checked)
+            //{
+            //    await CreateCombinedExcelFile(createdFiles);
+            //}
+            //AddMessage("Complete.");
+        }
+
+        private async Task DoOgBillRunMetrics(List<string> clients, bool doServiceRestarts, bool createSingleMergedFile)
+        {
             CTS = new CancellationTokenSource();
             var createdFiles = new List<string>();
 
-            foreach (var checkedItem in checkedListBox1.CheckedItems)
+            foreach (var client in clients.OrderBy(c => c))
             {
-                CurrentClient = (string)checkedItem;
+                CurrentClient = client;
 
-                if (string.IsNullOrEmpty(CurrrentClientsAppServer))
+                if (doServiceRestarts && string.IsNullOrEmpty(CurrrentClientsAppServer))
                 {
                     AddMessage("Could not find client!");
                     return;
@@ -86,20 +142,25 @@ namespace BillRunStatisticsAndRestarts
                     AddMessage("Could not gather original bill run metrics.");
                     continue;
                 }
-                var serviceRestarts = await ReadServiceRestartData(CTS.Token);
 
-                var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
+                if (doServiceRestarts)
+                {
+                    var serviceRestarts = await ReadServiceRestartData(CTS.Token);
 
+                    metrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
+
+                }
+                
                 ClientBillRunMetrics.Remove(CurrentClient);
-                ClientBillRunMetrics.Add(CurrentClient, updatedMetrics);
+                ClientBillRunMetrics.Add(CurrentClient, metrics);
 
-                var filePath = await WriteClientCSVFile(updatedMetrics, CTS.Token);
+                var filePath = await WriteClientCSVFile(metrics, CTS.Token);
                 createdFiles.Add(filePath);
             }
 
             if (CreateCombinedFileCheckBox.Checked)
             {
-                await CreateCombinedExcelFile(createdFiles);
+                await CreateCombinedExcelFile(createdFiles, createSingleMergedFile);
             }
             AddMessage("Complete.");
         }
@@ -326,24 +387,23 @@ namespace BillRunStatisticsAndRestarts
             return path;
         }
 
-        private async Task CreateCombinedExcelFile(IEnumerable<string> csvFilePaths)
+        private async Task CreateCombinedExcelFile(IEnumerable<string> csvFilePaths, bool createSingleMergedFile)
         {
             AddMessage("Creating combined metrics file...");
 
             // Create 1 mega sheet or 1 sheet per client?
-            bool doSingleSheet = this.AddAllClientsSheetCheckBox.Checked;
             int currentRow = 1;
 
             using ExcelPackage package = new();
             ExcelWorksheet worksheet = null;
-            if (doSingleSheet)
+            if (createSingleMergedFile)
             {
                 worksheet = package.Workbook.Worksheets.Add("ResultsCombined");
             }
-            
+
             foreach (var clientMetrics in ClientBillRunMetrics)
             {
-                if (!doSingleSheet)
+                if (!createSingleMergedFile)
                 {
                     worksheet = package.Workbook.Worksheets.Add(clientMetrics.Key);
                     currentRow = 1;
@@ -355,7 +415,7 @@ namespace BillRunStatisticsAndRestarts
                 // Header
                 if (currentRow == 1)
                 {
-                    var header = BillRunMetricsResults.GetCSVHeader(includeClientName: doSingleSheet);
+                    var header = BillRunMetricsResults.GetCSVHeader(includeClientName: createSingleMergedFile);
                     for (int i = 0; i < header.Count; i++)
                     {
                         worksheet.Cells[currentRow, i + 1].Value = header[i];
@@ -368,7 +428,7 @@ namespace BillRunStatisticsAndRestarts
                 {
                     var item = clientMetrics.Value[j];
                     int offset = 0;
-                    if (doSingleSheet)
+                    if (createSingleMergedFile)
                     {
                         offset = 1;
                         worksheet.Cells[currentRow, offset].Value = clientMetrics.Key;
@@ -403,7 +463,7 @@ namespace BillRunStatisticsAndRestarts
                 }
             }
 
-            var xlsxFileName = doSingleSheet ? "ResultsCombined.xlsx" : "CombinedMetrics.xlsx";
+            var xlsxFileName = createSingleMergedFile ? "ResultsCombined.xlsx" : "CombinedMetrics.xlsx";
             var xlsxFilePath = Path.Combine(FolderPath, xlsxFileName);
             if (File.Exists(xlsxFilePath))
             {
@@ -524,5 +584,265 @@ namespace BillRunStatisticsAndRestarts
                 checkedListBox1.SetItemChecked(i, checkOrUncheck);
             }
         }
+        private async void BillRunMetricsButton_Click(object sender, EventArgs e)
+        {
+            await DoOgBillRunMetrics(ProductionClients, false, true);
+        }
+
+
+        // I connected to the Production group and ran this query to get the list of clients:
+        // select '"' + SUBSTRING(DB_NAME(), len('client_')+1, len(db_name())) + '",'
+        public static List<string> ProductionClients = new List<string>()
+        {
+            "ALLWORLD",
+"ALLIEDTELECOM",
+"ADVANTAGETELECOM",
+"SNS",
+"XCHANGE",
+"ADCOMNI",
+"AFFILIATEDTECH",
+"BLUELINE",
+"ALTAWORX",
+"CSN",
+"ADVANCEDCOMMUNICATIONS",
+"AHS",
+"SUNCOMM",
+"ALEFEDGE",
+"NORTHLAND",
+"WAVESTREET",
+"ALTIGEN",
+"GIGTEL",
+"ANM",
+"USCONNECT",
+"EOSINC",
+"CCI",
+"ATG",
+"ASSETBLK",
+"GUESTTEK",
+"CONNECTEL",
+"APEXWIRELESS",
+"ALLCOVERED",
+"BROADSKY",
+"BROADLINK",
+"BROADVOICE",
+"APPSOLUTE",
+"SUMOFIBER",
+"BTTELECOM",
+"BBHINC",
+"TELESYSTEM",
+"CALLHARBOR",
+"ATRON",
+"SKYTEKTEL",
+"FLUENTSTREAM",
+"BRIDGECONNEX",
+"BBOSOLUTIONS",
+"EM3",
+"CATAPULT",
+"BLINKVOICE",
+"SKYMOBILE",
+"CALLTOWERWHITELABEL",
+"VOICECENTRAL",
+"CELITO",
+"CAROUSEL",
+"ATL",
+"CHOICETEL",
+"CERT",
+"CLOUDCOLLECT",
+"CONVERGEDNETWORKS",
+"CALLTOWER",
+"DECIBEL",
+"C3",
+"CBV",
+"TRACINET",
+"BALSAMWEST",
+"TECHSITTERS",
+"CALLSPROUT",
+"TRAPPTECHNOLOGY",
+"CLEARRATE",
+"MSP",
+"CIELO",
+"VOICESPRING",
+"M2NGAGE_TTC",
+"CLOUDCORESELLER",
+"ARENAONE",
+"HITEKTEL",
+"COEO",
+"CROCKER",
+"EFHUTTON",
+"BTI",
+"COVODA",
+"CREXENDONS",
+"CONDOR",
+"COMTECCLOUDSERVICES",
+"COMMCORE",
+"DTS",
+"SMARTCHOICE",
+"CNS",
+"LOGIN",
+"ATLANTECHONLINE",
+"TRIFECTA",
+"EDGE",
+"ECNTEL",
+"TELEPATH",
+"CSG",
+"DYNALINK",
+"NATIVENETWORK",
+"CLOUDCO",
+"DATAPHONE",
+"VISIONCTS",
+"ESCOTECH_SYNC",
+"GAZELLETEL",
+"LINEONE",
+"INVOIP",
+"CLOUD360TECH",
+"GIGTELRESELLER",
+"GLACIER",
+"CREXENDO",
+"FUTUREDIGITAL360",
+"STRATEGICSALES",
+"VOCALIP",
+"FUSECLOUD",
+"INETCOMMUNICATIONS",
+"INTELLIVOICE",
+"H20123",
+"MOMENTUM",
+"NEC",
+"DIGATALK",
+"HERITAGE",
+"MAGICJACKDEV",
+"INTEL",
+"SIPPIO",
+"M2SRESELLER",
+"JVC",
+"SKYSWITCH",
+"JT",
+"TOLY",
+"JCMTELECOM",
+"ODIN_DEMO",
+"MATRIXCOMM",
+"NATIVENETWORKRESELLER",
+"NUWAVE",
+"SNET",
+"ENTOUCH",
+"GABBWIRELESS",
+"GRID4",
+"SPECTRUM",
+"G12",
+"EXADIGM",
+"CTP",
+"CALTEL",
+"NETTELONE",
+"NUWAVEPARTNERS",
+"READYPOSTPAID",
+"HUNTER",
+"GYMPHONE",
+"NUMBERSENTRY",
+"HOSTEDVOICE",
+"METROSWITCH",
+"LIONGARD",
+"INTELLIVOICEUS",
+"SKYWAVE",
+"IMPULSE",
+"IPITOMY",
+"STRATUSDIAL",
+"SNETRESELLER",
+"LIBERTYTECH",
+"SYNTEL",
+"QXC",
+"M2S",
+"P2BROADBAND",
+"PORTING",
+"NEWROADS",
+"NUWAVE_BILLING",
+"RYTEL",
+"PREMIER",
+"RINGSTREET",
+"TELCLOUD",
+"SONICTEL",
+"OITVOIP",
+"PARLOR",
+"SCSCOMM",
+"STACK8",
+"TMETRICS",
+"SPECTROTEL",
+"SIMPLICITYVOIP",
+"WORX1",
+"WESTELCOM",
+"TELEVOIPS",
+"UTC",
+"TOPHAT",
+"TOTALCX",
+"SOTELRESELLER",
+"PEACE",
+"READY_ASSIST",
+"MNJ",
+"TELECOMP",
+"NORTHAMERICAN",
+"SELECTCOMMUNICATIONS",
+"TELETONIX",
+"PRESSONE",
+"XMISSION",
+"SOTELSYSTEMS",
+"READY",
+"SIMPLEVOIP",
+"SIPLOGIC",
+"OPENFIBER",
+"TECHNOLOGYDEPOT",
+"TECHMODE",
+"TELTECINC",
+"TELCLOUDRESELLER",
+"TELESUPPLY",
+"TELECLOUD",
+"TWNS",
+"Spoke",
+"WIRESTAR",
+"TELNET",
+"UNIFIEDGLOBAL",
+"SOUNDCONNECT",
+"UNICOMSOLUTIONS",
+"QMED",
+"TITANIUM",
+"PRIMEVOX",
+"REYNWOOD",
+"TELEBROAD",
+"RESONATEVOIP",
+"QUICKCOPPER",
+"SIPIQ",
+"TOLYRESELLER",
+"STAGE2NETWORKS",
+"TELOGIX",
+"XACT",
+"STRATUSTELECOM",
+"MONGO",
+"ONEPATH",
+"SKYSWITCHMAIN",
+"DIGITALAGENT",
+"LOGICOMUSA",
+"WIREDTELCOM",
+"KATEKO",
+"M2NGAGE2",
+"IPGLOBAL",
+"ESTECH",
+"KINETICVOIP",
+"MACHNETWORKS",
+"MAGICJACK",
+"ELEMENTPBX",
+"INFOSTRUCTURE",
+"MARCO",
+"TRUMOBILITY",
+"LOCALSTRATUS",
+"ESCOTECH",
+"TELEPLUS",
+"T1CO",
+"IPFONE",
+"MAVEN",
+"NGN",
+"MACHNETWORKSRESELLER",
+"DIALOG",
+"KINECT",
+"ONELINK",
+"PARKER",
+"OHOCONNECT"
+        };
     }
 }
