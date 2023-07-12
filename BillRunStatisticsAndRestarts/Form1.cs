@@ -1,6 +1,8 @@
 using Newtonsoft.Json;
 using OfficeOpenXml;
+using OfficeOpenXml.Style;
 using System.Data.SqlClient;
+using System.Linq;
 
 namespace BillRunStatisticsAndRestarts
 {
@@ -17,19 +19,28 @@ namespace BillRunStatisticsAndRestarts
         public string ClientsAppServerShort => StringFunctions.Left(CurrrentClientsAppServer, 5).ToUpper();
         public string StartDate => StartDateTimePicker.Value.ToString("yyyy-MM-dd");
 
+        /*
+          select csharp = 'new ClientAndAppServer("' + Code + '", "' + Hostname + '"),' 
+          from vClient_App_Server where code in ('vinix', 'xmission', 'balsamwest')
+          order by Code
+         */
         public List<ClientAndAppServer> ClientsAndAppServers = new()
         {
+            new ClientAndAppServer("BBOSOLUTIONS", "app16.core00.rev.io"),
+            new ClientAndAppServer("CALLTOWER", "app13.core00.rev.io"),
+            new ClientAndAppServer("CCI", "app14.core00.rev.io"),
+            new ClientAndAppServer("CLEARRATE", "app12.core00.rev.io"),
             new ClientAndAppServer("HUNTER", "app11.core00.rev.io"),
+            new ClientAndAppServer("MACHNETWORKS", "app15.core00.rev.io"),
             new ClientAndAppServer("NUWAVE", "app11.core00.rev.io"),
             new ClientAndAppServer("SKYSWITCH", "app11.core00.rev.io"),
-            new ClientAndAppServer("CLEARRATE", "app12.core00.rev.io"),
             new ClientAndAppServer("SOTELSYSTEMS", "app12.core00.rev.io"),
-            new ClientAndAppServer("CALLTOWER", "app13.core00.rev.io"),
             new ClientAndAppServer("SPECTROTEL", "app13.core00.rev.io"),
-            new ClientAndAppServer("CCI", "app14.core00.rev.io"),
-            new ClientAndAppServer("MACHNETWORKS", "app15.core00.rev.io"),
-            new ClientAndAppServer("BBOSOLUTIONS", "app16.core00.rev.io"),
-            new ClientAndAppServer("TOUCHTONE", "app18.core00.rev.io")
+            new ClientAndAppServer("TOUCHTONE", "app18.core00.rev.io"),
+
+            new ClientAndAppServer("BALSAMWEST", "app17.core00.rev.io"),
+            new ClientAndAppServer("VINIX", "app13.core00.rev.io"),
+            new ClientAndAppServer("XMISSION", "app15.core00.rev.io"),
         };
 
         public CancellationTokenSource CTS { get; set; }
@@ -59,57 +70,14 @@ namespace BillRunStatisticsAndRestarts
         private async void Button1_Click(object sender, EventArgs e)
         {
             var selectedClients = new List<string>();
-            foreach (var checkedItem in checkedListBox1.CheckedItems)
+            foreach (object? checkedItem in checkedListBox1.CheckedItems)
             {
                 selectedClients.Add((string)checkedItem);
             }
+            var selectedOrderedClients = selectedClients.OrderBy(client => client).ToList();
 
-            await DoOgBillRunMetrics(selectedClients, true, AddAllClientsSheetCheckBox.Checked);
-            
-            //CTS = new CancellationTokenSource();
-            //var createdFiles = new List<string>();
-
-            //foreach (var checkedItem in checkedListBox1.CheckedItems)
-            //{
-            //    CurrentClient = (string)checkedItem;
-
-            //    if (string.IsNullOrEmpty(CurrrentClientsAppServer))
-            //    {
-            //        AddMessage("Could not find client!");
-            //        return;
-            //    }
-
-            //    if (!Directory.Exists(ClientDirectory))
-            //    {
-            //        Directory.CreateDirectory(ClientDirectory);
-            //        AddMessage($"Directory created: {ClientDirectory}");
-            //    }
-            //    AddMessage($"Client Directory set to {ClientDirectory}");
-
-            //    var path = Path.Combine(ClientDirectory, BillRunStatsFile);
-            //    AddMessage($"Reading bill run data from {path}");
-            //    var metrics = await ReadOriginalMetrics(path, CTS.Token);
-            //    if (metrics == null || !metrics.Any())
-            //    {
-            //        AddMessage("Could not gather original bill run metrics.");
-            //        continue;
-            //    }
-            //    var serviceRestarts = await ReadServiceRestartData(CTS.Token);
-
-            //    var updatedMetrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
-
-            //    ClientBillRunMetrics.Remove(CurrentClient);
-            //    ClientBillRunMetrics.Add(CurrentClient, updatedMetrics);
-
-            //    var filePath = await WriteClientCSVFile(updatedMetrics, CTS.Token);
-            //    createdFiles.Add(filePath);
-            //}
-
-            //if (CreateCombinedFileCheckBox.Checked)
-            //{
-            //    await CreateCombinedExcelFile(createdFiles);
-            //}
-            //AddMessage("Complete.");
+            var doSingleFile = CreateCombinedFile_SingleSheetCB.Checked || CreateCombinedFile_IndividualSheetsCB.Checked;
+            await DoOgBillRunMetrics(selectedOrderedClients, true, doSingleFile);
         }
 
         private async Task DoOgBillRunMetrics(List<string> clients, bool doServiceRestarts, bool createSingleMergedFile)
@@ -150,7 +118,7 @@ namespace BillRunStatisticsAndRestarts
                     metrics = await DetermineBillRunsImpactedByServiceRestarts(metrics, serviceRestarts, CTS.Token);
 
                 }
-                
+
                 ClientBillRunMetrics.Remove(CurrentClient);
                 ClientBillRunMetrics.Add(CurrentClient, metrics);
 
@@ -158,7 +126,7 @@ namespace BillRunStatisticsAndRestarts
                 createdFiles.Add(filePath);
             }
 
-            if (CreateCombinedFileCheckBox.Checked)
+            if (CreateCombinedFile_IndividualSheetsCB.Checked)
             {
                 await CreateCombinedExcelFile(createdFiles, createSingleMergedFile);
             }
@@ -232,6 +200,7 @@ namespace BillRunStatisticsAndRestarts
 
                     using var sp = new SqlCommand("og.bill_run_metrics", sqlConnection);
                     sp.CommandType = System.Data.CommandType.StoredProcedure;
+                    sp.CommandTimeout = 60;
                     sp.Parameters.AddWithValue("@start_date", StartDate);
                     sp.Parameters.AddWithValue("@end_date", null);
                     sp.Parameters.AddWithValue("@include_mrcs", 1);
